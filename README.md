@@ -1,137 +1,135 @@
-# README: Handling Multiple Email Types for APOL and PeopleSoft
-
-## Table of Contents
-1. [Overview](#overview)
-2. [The Issue](#the-issue)
-3. [Solution Approach](#solution-approach)
-    1. [Extracting Email Data](#extracting-email-data)
-    2. [Identifying the Preferred Email](#identifying-the-preferred-email)
-    3. [Working with Multiple Email Types](#working-with-multiple-email-types)
-4. [Implementation Guide](#implementation-guide)
-    1. [JavaScript Code for Extracting Emails](#javascript-code-for-extracting-emails)
-    2. [Handling Preferred Email](#handling-preferred-email)
-    3. [Usage Example](#usage-example)
-5. [Future Considerations](#future-considerations)
-6. [Conclusion](#conclusion)
-
----
+# README: Email Alignment Issue Between APOL and PeopleSoft
 
 ## Overview
 
-In systems like APOL and PeopleSoft, email addresses for users are often stored in multiple formats (HOME, BUSINESS, WORK, etc.). However, the login process or data sync may only check against one type of email (e.g., HOME). This can cause issues when users change their email addresses or use different email types for different contexts.
+There’s a misalignment between the email addresses stored in **APOL** and **PeopleSoft**. The core issue is that **PeopleSoft’s HOME email** keeps changing because it's shared across multiple platforms (e.g., MyInsead), while **APOL** no longer syncs these changes after some lines of code were commented out to avoid constant updates.
 
-The goal is to collect and handle **multiple types of email addresses** without removing any, allowing the system to reference them all, particularly during login, sync, or data validation processes.
+This leads to problems, especially during **login** and when syncing email changes. The goal is to find a way to handle multiple email types across both systems without causing login issues or data inconsistencies.
 
 ---
 
 ## The Issue
 
-### Scenario:
-- You encountered an issue where the system checks only against the **HOME** email type in PeopleSoft, but users might log in or use email addresses marked as **BUSINESS** or **WORK**.
-- The system was filtering out non-HOME emails, which caused errors in login and data sync when users expected other email types to be accepted.
-  
-### Problem:
-- The current implementation used in PeopleSoft and APOL removes email nodes that aren’t of type HOME, which limits flexibility in how users interact with the system.
-- This results in misrepresentation of data, where updates to emails (e.g., when a user updates their BUSINESS email) are not properly handled.
+1. **Login Issues**:
+   APOL relies on the `SCC_UR_AUTHENTICATE_REQ` web service to authenticate users by verifying their information, including the email address, in PeopleSoft. Since the HOME email in PeopleSoft changes frequently, and APOL no longer syncs these updates, the systems fall out of alignment, leading to errors like HTTP 500 during login attempts.
+
+2. **Email Sync Problems**:
+   Initially, APOL synced the first email in the array from PeopleSoft. However, because we didn’t have a process to notify applicants when their email was changed, syncing was disabled. Now, APOL no longer updates its records when PeopleSoft’s HOME email changes, creating further inconsistencies.
+
+---
+
+## Objective
+
+The goal is to allow APOL to handle **multiple email types** (not just the HOME email) and reduce dependency on the changing HOME email in PeopleSoft. This way, login and communication can be more flexible and accurate.
 
 ---
 
 ## Solution Approach
 
-### Extracting Email Data
+### 1. Sync and Store All Email Types
 
-Rather than removing non-HOME email addresses from the XML structure or form data, all email addresses (including HOME, WORK, BUSINESS, etc.) should be **retained** and processed as part of the user’s profile. This ensures:
-1. **Flexibility**: Multiple email addresses are recognized and usable in the system.
-2. **Integrity**: No loss of data as all emails are kept in the system for reference or login.
+Instead of syncing only the HOME email, we need to **capture and store all email types** provided by PeopleSoft. This includes:
+- **HOME**
+- **BUSINESS**
+- **CAMPUS**
+- **INSEAD LOGIN**
+- **LINKEDIN**, etc.
 
-### Identifying the Preferred Email
+By storing all these types, we allow APOL to verify the login using any valid email address and avoid issues caused by PeopleSoft changing the HOME email.
 
-In addition to keeping all email addresses, the system also marks one email as "preferred" using a flag (`PREF_EMAIL_FLAG`). This allows you to:
-- Decide which email should be used by default when multiple email types are present.
-- Maintain consistency when dealing with login verification or external data sync.
+### 2. Use Preferred Email for Login
 
-### Working with Multiple Email Types
+Each user has a **preferred email** stored in APOL (identified by `PREF_EMAIL_FLAG`). During login, APOL should prioritize checking the preferred email first and fallback on other email types (if necessary). This ensures that even if PeopleSoft’s HOME email changes, the preferred email in APOL can still be used for authentication.
 
-1. **Extract all emails**: Instead of filtering for just the HOME email, the system should retain all email addresses in the XML structure or data table.
-2. **Check for preferred email**: Use the `PREF_EMAIL_FLAG` to determine which email should be prioritized when multiple options are available.
+### 3. Re-enable Sync with a Notification
+
+Once we capture and store multiple email types, the sync between PeopleSoft and APOL can be re-enabled. However, when the HOME email changes, users should be notified of the update and given the option to adjust their preferred email if needed.
 
 ---
 
 ## Implementation Guide
 
-### JavaScript Code for Extracting Emails
+### PHP Code to Extract and Store Emails
 
-The following JavaScript code can be used to extract all email addresses from the system's HTML table (as seen in PeopleSoft's UI). It captures:
-- **Email type** (e.g., HOME, BUSINESS)
-- **Email address**
-- **Preferred email** flag
+In APOL, we can modify the PHP logic to extract all email types from the SOAP response provided by PeopleSoft. Here’s how to do it:
 
-```javascript
-const rows = document.querySelectorAll('#table_edp-2500-oep-avira_edp-2500-oep-avira-personal-data-emails-email-preferred tbody tr');
+```php
+$emailAddressDatas = $this->find($datas, 'emailAddress');
+$emailAddressDatas = !isset($emailAddressDatas[0]) ? array($emailAddressDatas) : $emailAddressDatas;
 
-let emailAddresses = [];
+if ($emailAddressDatas) {
+    $emailAddresses = new EmailAddresses();
 
-rows.forEach((row) => {
-    const emailType = row.querySelector('input[data-map-key="E_ADDR_TYPE"]').value;
-    const emailAddress = row.querySelector('input[type="email"]').value;
-    const preferredRadio = row.querySelector('input[type="radio"][value="Y"]');
-    const isPreferred = preferredRadio ? preferredRadio.checked : false;
+    foreach ($emailAddressDatas as $emailAddressData) {
+        $emailAddress = new EmailAddress();
+        $emailAddress = $this->populate($emailAddress, $emailAddressData);
 
-    emailAddresses.push({
-        emailType: emailType,
-        emailAddress: emailAddress,
-        isPreferred: isPreferred
-    });
-});
+        // Check if the email has a preferred flag and set it accordingly
+        \is_null($emailAddress->prefEmailFlag) ? $emailAddress->prefEmailFlag = 'N' : $emailAddress->prefEmailFlag;
 
-console.log(emailAddresses);
-```
+        // Validate and store the email address
+        if ($emailAddress->validate()) {
+            $emailAddresses->emailAddress[] = $emailAddress;
+        }
+    }
 
-### Handling Preferred Email
+    // If only one email is available, mark it as preferred
+    if (is_array($emailAddresses->emailAddress) && 1 === \count($emailAddresses->emailAddress)) {
+        $emailAddresses->emailAddress[0]->prefEmailFlag = 'Y';
+    }
 
-Once you have extracted the email data, you can process the preferred email as follows:
-
-```javascript
-const preferredEmail = emailAddresses.find(email => email.isPreferred)?.emailAddress;
-console.log("Preferred Email: ", preferredEmail);
-```
-
-This code will find and return the email marked as preferred.
-
-### Usage Example
-
-If you need to verify a login email against multiple email types:
-
-```javascript
-const loginEmail = 'user@example.com';
-const isEmailValid = emailAddresses.some(email => email.emailAddress === loginEmail);
-
-if (isEmailValid) {
-    console.log("Login successful");
-} else {
-    console.log("Email not found");
+    if ($emailAddresses->validate()) {
+        $constituent->emailAddresses[] = $emailAddresses;
+    }
 }
 ```
 
-This will check the login email against all stored email addresses and determine if the login should succeed.
+### How It Works:
+- **Extract all emails** from the SOAP response. This includes HOME, BUSINESS, and other types.
+- **Check the preferred flag** (`PREF_EMAIL_FLAG`) to identify which email is marked as preferred.
+- **Validate and store** the email addresses in APOL, ensuring all types are kept.
+
+### PHP Logic for Login Verification
+
+Instead of checking just the HOME email, APOL should validate the login against all stored email addresses:
+
+```php
+$loginEmail = 'user@example.com';
+$found = false;
+
+foreach ($emailAddresses->emailAddress as $emailAddress) {
+    if ($loginEmail === $emailAddress->email) {
+        $found = true;
+        break;
+    }
+}
+
+if ($found) {
+    // Proceed with login
+} else {
+    // Handle login failure (email not found)
+}
+```
 
 ---
 
 ## Future Considerations
 
-1. **Syncing Data Between APOL and PeopleSoft**:
-   - Ensure that the changes made in PeopleSoft (such as an email update) are reflected in APOL. This can be done via batch jobs or an API sync mechanism that handles updates in real-time.
+### 1. Notify Users of Email Changes
 
-2. **Handling Multiple Preferred Emails**:
-   - It’s possible for multiple email types to be marked as "preferred" in complex cases. The system should include validation rules to handle this gracefully (e.g., prioritizing BUSINESS over HOME or showing an error if two emails are marked preferred).
+When PeopleSoft’s HOME email changes, users should receive a notification in APOL informing them of the update. This can be done via email or a notification within the APOL portal. They should also have the option to update their preferred email if they wish.
 
-3. **Customization Based on User Roles**:
-   - Depending on the user role (e.g., student, alumni, staff), the system may prefer different types of emails. A rule engine can be added to dynamically assign preferences based on roles or context.
+### 2. Multiple Preferred Emails
+
+In some cases, users might have multiple preferred emails (e.g., one for business and one for personal use). APOL should provide a mechanism to allow users to manage multiple preferred emails and prioritize one based on the context (e.g., business vs. personal communications).
 
 ---
 
 ## Conclusion
 
-By adjusting the way email addresses are handled (i.e., keeping all types and respecting the "preferred" flag), the system becomes more flexible and robust. This allows APOL and PeopleSoft to provide a seamless user experience where users can interact with the system using different email types, without losing data integrity or causing login errors.
+By implementing these changes, APOL will be able to:
+- **Handle multiple email types** without depending solely on the HOME email.
+- **Avoid login issues** caused by mismatches between PeopleSoft and APOL.
+- **Improve user experience** by giving more flexibility with email management and syncing updates across platforms.
 
-This README serves as a comprehensive guide for developers or administrators looking to understand and implement a multi-email approach in systems like APOL and PeopleSoft.
+This solution ensures that email data remains consistent and up-to-date, avoiding common pitfalls caused by frequent email changes in PeopleSoft.
